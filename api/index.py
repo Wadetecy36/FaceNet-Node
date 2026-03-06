@@ -16,12 +16,35 @@ def get_db():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
 
+@app.route("/api/health")
+def health():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        return jsonify({"status": "healthy", "db": "connected"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/api/faces", methods=["GET"])
 def list_faces():
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT name, registered_at, seen_count as count, thumb FROM face_records")
+        # Create table if missing (Migration)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS FaceRecord (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) UNIQUE,
+                encoding_json TEXT,
+                thumb TEXT,
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                seen_count INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("SELECT name, registered_at, seen_count as count, thumb FROM FaceRecord")
         recs = cur.fetchall()
         cur.close()
         conn.close()
@@ -45,7 +68,7 @@ def register():
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("INSERT INTO face_records (name, encoding_json, thumb, registered_at, seen_count) VALUES (%s, %s, %s, %s, %s)",
+        cur.execute("INSERT INTO FaceRecord (name, encoding_json, thumb, registered_at, seen_count) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (name) DO UPDATE SET encoding_json = EXCLUDED.encoding_json, thumb = EXCLUDED.thumb",
                    (name, encoding_json, thumb, datetime.utcnow(), 0))
         conn.commit()
         cur.close()
@@ -63,10 +86,18 @@ def log_attendance():
     try:
         conn = get_db()
         cur = conn.cursor()
+        # Create table if missing
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS AttendanceLog (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         # Increment seen_count
-        cur.execute("UPDATE face_records SET seen_count = seen_count + 1 WHERE name = %s", (name,))
+        cur.execute("UPDATE FaceRecord SET seen_count = seen_count + 1 WHERE name = %s", (name,))
         # Add log entry
-        cur.execute("INSERT INTO attendance_logs (name, timestamp) VALUES (%s, %s)", (name, datetime.utcnow()))
+        cur.execute("INSERT INTO AttendanceLog (name, timestamp) VALUES (%s, %s)", (name, datetime.utcnow()))
         conn.commit()
         cur.close()
         conn.close()
@@ -82,7 +113,9 @@ def get_logs():
     try:
         conn = get_db()
         cur = conn.cursor()
-        query = "SELECT id, name, timestamp FROM attendance_logs WHERE 1=1"
+        # Ensure table exists
+        cur.execute("CREATE TABLE IF NOT EXISTS AttendanceLog (id SERIAL PRIMARY KEY, name VARCHAR(255), timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        query = "SELECT id, name, timestamp FROM AttendanceLog WHERE 1=1"
         params = []
         if name:
             query += " AND name ILIKE %s"
@@ -110,7 +143,7 @@ def delete_face(name):
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("DELETE FROM face_records WHERE name = %s", (name,))
+        cur.execute("DELETE FROM FaceRecord WHERE name = %s", (name,))
         conn.commit()
         cur.close()
         conn.close()
