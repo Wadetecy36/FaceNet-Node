@@ -8,6 +8,10 @@ export class FaceService {
   static async loadModels() {
     if (this.initialized) return;
 
+    // Initialize TensorFlow.js background
+    await faceapi.tf.setBackend('webgl');
+    await faceapi.tf.ready();
+
     await Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
       faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
