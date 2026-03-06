@@ -53,11 +53,15 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
+        console.log("Loading AI Models from:", '/models/');
         await FaceService.loadModels();
         await fetchUsers();
         await fetchLogs();
         setIsInitializing(false);
-      } catch (err) { console.error("Initialization error:", err); }
+      } catch (err: any) {
+        console.error("Initialization error:", err);
+        alert("CRITICAL: Models failed to load. Please check if /public/models contains all 6 shard files. Error: " + err.message);
+      }
     };
     init();
 
