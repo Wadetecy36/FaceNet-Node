@@ -1,6 +1,6 @@
 import * as faceapi from '@vladmandic/face-api';
 
-const MODEL_URL = '/models/';
+const MODEL_URL = 'https://vladmandic.github.io/face-api/model/';
 
 export class FaceService {
   private static initialized = false;
