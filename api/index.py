@@ -13,6 +13,8 @@ CORS(app)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db():
+    if not DATABASE_URL:
+        raise Exception("System Error: DATABASE_URL environment variable is missing in Vercel settings.")
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
 
@@ -152,5 +154,4 @@ def delete_face(name):
         return jsonify({"ok": False, "msg": str(e)}), 500
 
 # Expose as a single Vercel route
-def handler(event, context):
-    return app(event, context)
+# Vercel handles Flask apps automatically if they export 'app'
