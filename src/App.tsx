@@ -114,9 +114,13 @@ export default function App() {
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/faces');
+      if (!res.ok) throw new Error("API_OFFLINE");
       const data = await res.json();
       setUsers(Array.isArray(data) ? data : []);
-    } catch { }
+      setSystemStatus('nominal');
+    } catch {
+      setSystemStatus('alert');
+    }
   };
 
   const fetchLogs = async () => {
@@ -125,6 +129,7 @@ export default function App() {
       if (searchTerm) params.append('search', searchTerm);
       if (filterDate) params.append('date', filterDate);
       const res = await fetch(`/api/attendance_logs?${params.toString()}`);
+      if (!res.ok) throw new Error("API_OFFLINE");
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : []);
     } catch { }
