@@ -1,617 +1,635 @@
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  UserPlus,
-  History,
-  ShieldCheck,
-  User,
-  CheckCircle2,
-  Loader2,
-  Scan,
-  Database as DbIcon,
-  Fingerprint,
-  RefreshCw,
-  Activity,
-  Cpu,
-  ChevronRight,
-  ArrowRight,
-  Maximize2,
-  AlertCircle,
-  Clock,
-  LayoutDashboard
-} from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as faceapi from '@vladmandic/face-api';
 import { FaceService } from './lib/face-service';
-import { cn } from './lib/utils';
 
 interface UserData {
-  name: string;
-  count: number;
-  registered_at: string;
-  encoding_json?: string;
-  thumb?: string;
+  name: string; count: number; registered_at: string;
+  encoding_json?: string; thumb?: string;
+}
+interface AttendanceLog { id: number; name: string; timestamp: string; }
+interface LiveFace { name: string; known: boolean; }
+interface GWPayload {
+  person_count: number; unknown_count: number; processing_ms: number;
+  max_severity: string; location: string;
+  detections: { label: string; confidence: number }[];
+  anomalies?: any[];
+  turbidity?: { level: string; score: number; color_signature: string };
+}
+type Tab = 'scan' | 'enroll' | 'vault' | 'log' | 'greenwatch';
+
+const API_URL = 'http://localhost:3001';
+const GW_WS   = 'ws://localhost:8000/ws';
+const GW_HTTP = 'http://localhost:8000';
+const GW_FILE = 'file:///F:/FaceNet/dashboard.html';
+
+const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-GB', { hour12: false });
+const fmtDate = (ts: string) => new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+const initials = (n: string) => n.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+const TURB_COL: Record<string, string> = {
+  CLEAR: '#00f593', MODERATE: '#fbbf24', TURBID: '#f97316', CRITICAL: '#ff4757',
+};
+
+const I = {
+  scan:    (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M7 3H5a2 2 0 00-2 2v2M17 3h2a2 2 0 012 2v2M7 21H5a2 2 0 01-2-2v-2M17 21h2a2 2 0 002-2v-2"/><circle cx="12" cy="12" r="3"/><path d="M12 9V7M12 17v-2M15 12h2M7 12h2"/></svg>),
+  enroll:  (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.58-7 8-7s8 3 8 7"/><path d="M18 14h4M20 12v4"/></svg>),
+  vault:   (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a4 4 0 018 0v2"/><circle cx="12" cy="14" r="2"/></svg>),
+  log:     (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>),
+  gw:      (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>),
+  refresh: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>),
+  search:  (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>),
+  shield:  (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.25C17.25 22.15 21 17.25 21 12V7L12 2z"/><path d="M9 12l2 2 4-4"/></svg>),
+  warn:    (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>),
+  expand:  (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>),
+  water:   (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M12 2C6 9 4 13 4 16a8 8 0 0016 0c0-3-2-7-8-14z"/></svg>),
+  chevL:   (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>),
+  chevR:   (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>),
+  ok:      (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>),
+};
+
+function BootScreen() {
+  return (
+    <div className="boot">
+      <div className="boot-ring"><div className="boot-ring-inner" /><div className="boot-icon">{I.shield}</div></div>
+      <p className="boot-name">FACENET NODE</p>
+      <p className="boot-sub">Initialising biometric engines</p>
+      <div className="boot-dots"><span /><span /><span /></div>
+    </div>
+  );
 }
 
-interface AttendanceLog {
-  id: number;
-  name: string;
-  timestamp: string;
+function GWWidget({ payload, up }: { payload: GWPayload | null; up: boolean }) {
+  const lvl   = payload?.turbidity?.level ?? '--';
+  const score = payload?.turbidity?.score ?? 0;
+  const col   = TURB_COL[lvl] ?? '#3d5273';
+  const sev   = payload?.max_severity ?? 'none';
+  return (
+    <div className="gw-widget">
+      <div className="gw-widget-hdr">
+        <span className="gw-widget-title">GreenWatch Feed</span>
+        <span className={`gw-ws-dot${up ? ' live' : ''}`} />
+      </div>
+      {payload ? (
+        <>
+          <div className="gw-widget-row"><span className="gw-wlbl">Persons</span>
+            <span className="gw-wval" style={{ color: (payload.person_count??0)>3?'#ff4757':'#00d4ff' }}>{payload.person_count??0}</span></div>
+          <div className="gw-widget-row"><span className="gw-wlbl">Severity</span>
+            <span className="gw-wval" style={{ color: sev==='high'?'#ff4757':sev==='medium'?'#f97316':sev==='low'?'#fbbf24':'#3d5273' }}>{sev.toUpperCase()}</span></div>
+          <div className="gw-widget-row"><span className="gw-wlbl">Water</span>
+            <span className="gw-wval" style={{ color: col }}>{lvl}</span></div>
+          {score > 0 && (
+            <div className="gw-score-bar-wrap">
+              <div className="gw-score-bar-bg"><div className="gw-score-bar-fill" style={{ width:`${score}%`, background:col }} /></div>
+              <span className="gw-score-num">{score}/100</span>
+            </div>
+          )}
+          <div className="gw-widget-row"><span className="gw-wlbl">Infer</span>
+            <span className="gw-wval c-muted">{Math.round(payload.processing_ms??0)}ms</span></div>
+        </>
+      ) : (
+        <p className="gw-widget-off">{up ? 'Awaiting data...' : 'Server offline'}</p>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [ready, setReady]           = useState(false);
+  const [tab, setTab]               = useState<Tab>('scan');
+  const [collapsed, setCollapsed]   = useState(false);
+  const [users, setUsers]           = useState<UserData[]>([]);
+  const [logs, setLogs]             = useState<AttendanceLog[]>([]);
+  const [serverUp, setServerUp]     = useState<boolean | null>(null);
+  const [gwUp, setGwUp]             = useState(false);
+  const [gwPayload, setGwPayload]   = useState<GWPayload | null>(null);
+  const [scanning, setScanning]     = useState(false);
+  const [newName, setNewName]       = useState('');
+  const [enrolling, setEnrolling]   = useState(false);
+  const [search, setSearch]         = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+  const [lastSeen, setLastSeen]     = useState<string | null>(null);
+  const [faces, setFaces]           = useState<LiveFace[]>([]);
+  const [camReady, setCamReady]     = useState(false);
+  const [clock, setClock]           = useState('');
+  const [toast, setToast]           = useState<{msg:string;ok?:boolean}|null>(null);
+  const [toastTimer, setToastTimer] = useState<ReturnType<typeof setTimeout>|null>(null);
+
+  const videoRef  = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [users, setUsers] = useState<UserData[]>([]);
-  const [logs, setLogs] = useState<AttendanceLog[]>([]);
-  const [activeTab, setActiveTab] = useState<'scan' | 'register' | 'roster' | 'logs'>('scan');
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [isCameraReady, setIsCameraReady] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState('');
-  const [cpuUsage, setCpuUsage] = useState(12);
-  const [lastDetected, setLastDetected] = useState<string | null>(null);
-  const [systemStatus, setSystemStatus] = useState<'nominal' | 'scanning' | 'alert'>('nominal');
+  const streamRef = useRef<MediaStream | null>(null);
+  const wsRef     = useRef<WebSocket | null>(null);
+  const wsRetry   = useRef(2000);
 
-  // Initialize
   useEffect(() => {
-    const init = async () => {
-      try {
-        console.log("Loading AI Models...");
-        await FaceService.loadModels();
-        await fetchUsers();
-        await fetchLogs();
-        setIsInitializing(false);
-      } catch (err: any) {
-        console.error("Initialization error:", err);
-        alert("CRITICAL: Models failed to load. " + err.message);
-      }
+    const tick = () => setClock(new Date().toLocaleTimeString('en-GB',{hour12:false}));
+    tick(); const id = setInterval(tick,1000); return () => clearInterval(id);
+  },[]);
+
+  useEffect(() => {
+    (async () => {
+      try { await FaceService.loadModels(); await fetchUsers(); await fetchLogs(); }
+      catch(e){ console.error(e); } finally { setReady(true); }
+    })();
+  },[]);
+
+  const connectGW = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const ws = new WebSocket(GW_WS);
+    wsRef.current = ws;
+    ws.onopen  = () => { setGwUp(true); wsRetry.current=2000; };
+    ws.onclose = () => {
+      setGwUp(false);
+      setTimeout(connectGW, wsRetry.current);
+      wsRetry.current = Math.min(wsRetry.current*1.5, 15000);
     };
-    init();
+    ws.onerror = () => ws.close();
+    ws.onmessage = (e) => {
+      try { const m=JSON.parse(e.data); if(m.type==='inference_result') setGwPayload(m.payload); } catch {}
+    };
+  },[]);
 
-    const interval = setInterval(() => {
-      setCpuUsage(prev => {
-        const next = prev + (Math.random() * 4 - 2);
-        return Math.min(Math.max(Math.floor(next), 5), 25);
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+  useEffect(() => { connectGW(); return () => { wsRef.current?.close(); }; },[connectGW]);
 
   useEffect(() => {
-    if (!isInitializing && (activeTab === 'scan' || activeTab === 'register')) startCamera();
-    else stopCamera();
-  }, [isInitializing, activeTab]);
+    if (!ready) return;
+    if (tab==='scan'||tab==='enroll') startCam(); else stopCam();
+  },[tab,ready]);
 
-  const startCamera = async () => {
+  const startCam = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => setIsCameraReady(true);
-      }
-    } catch (err) {
-      console.error(err);
-      setSystemStatus('alert');
-    }
+      if (streamRef.current) return;
+      const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}});
+      streamRef.current = s;
+      if (videoRef.current){ videoRef.current.srcObject=s; videoRef.current.onloadedmetadata=()=>setCamReady(true); }
+    } catch { showToast('Camera access denied',false); }
   };
 
-  const stopCamera = () => {
-    setIsCameraReady(false);
-    if (videoRef.current?.srcObject) {
-      (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-      videoRef.current.srcObject = null;
-    }
+  const stopCam = () => {
+    setCamReady(false);
+    streamRef.current?.getTracks().forEach(t=>t.stop());
+    streamRef.current = null;
+    if(videoRef.current) videoRef.current.srcObject=null;
   };
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch('/api/faces');
-      if (!res.ok) throw new Error("API_OFFLINE");
-      const data = await res.json();
-      setUsers(Array.isArray(data) ? data : []);
-      setSystemStatus('nominal');
-    } catch {
-      setSystemStatus('alert');
-    }
-  };
+      const r = await fetch(`${API_URL}/api/users`,{signal:AbortSignal.timeout(3000)});
+      if(!r.ok) throw new Error();
+      const d = await r.json();
+      setUsers(Array.isArray(d)?d:[]);
+      setServerUp(true);
+    } catch { setServerUp(false); }
+  },[]);
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     try {
-      const params = new URLSearchParams();
-      if (searchTerm) params.append('search', searchTerm);
-      if (filterDate) params.append('date', filterDate);
-      const res = await fetch(`/api/attendance_logs?${params.toString()}`);
-      if (!res.ok) throw new Error("API_OFFLINE");
-      const data = await res.json();
-      setLogs(Array.isArray(data) ? data : []);
-    } catch { }
-  };
+      const p = new URLSearchParams();
+      if(search) p.append('search',search);
+      if(dateFilter) p.append('date',dateFilter);
+      const r = await fetch(`${API_URL}/api/attendance?${p}`);
+      if(!r.ok) throw new Error();
+      const d = await r.json();
+      setLogs(Array.isArray(d)?d:[]);
+    } catch {}
+  },[search,dateFilter]);
 
-  useEffect(() => { fetchLogs(); }, [searchTerm, filterDate]);
+  useEffect(()=>{ if(ready){ fetchUsers(); fetchLogs(); } },[ready]);
+  useEffect(()=>{ if(ready) fetchLogs(); },[search,dateFilter]);
 
-  // AI Detection Loop
-  useEffect(() => {
-    let animationId: number;
-    let detectionThrottle = 0;
-
-    const runDetection = async () => {
-      if (videoRef.current && canvasRef.current && isCameraReady && activeTab === 'scan' && Date.now() - detectionThrottle > 200) {
-        detectionThrottle = Date.now();
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-
-        if (!ctx) return;
-
-        const dims = faceapi.matchDimensions(canvas, video, true);
-        const detections = await FaceService.detectFaces(video);
-        const resized = faceapi.resizeResults(detections, dims);
-
-        const usersWithDescriptors = users
-          .filter(u => u.encoding_json)
-          .map(u => ({ name: u.name, descriptor: JSON.parse(u.encoding_json!) }));
-
-        const matcher = FaceService.createMatcher(usersWithDescriptors);
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        if (resized.length > 0) setSystemStatus('scanning');
-        else setSystemStatus('nominal');
-
-        resized.forEach(det => {
-          const bestMatch = matcher?.findBestMatch(det.descriptor);
-          const label = bestMatch?.toString() || "Unknown";
-          const name = label.split(' ')[0];
-          const isKnown = name !== 'unknown';
-          const color = isKnown ? '#10b981' : '#F43F5E';
-
-          // Futuristic HUD Box
-          const { x, y, width, height } = det.detection.box;
-
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([10, 5]);
-          ctx.strokeRect(x, y, width, height);
-          ctx.setLineDash([]);
-
-          // Corners
-          const len = 20;
-          ctx.lineWidth = 4;
-          // TL
-          ctx.beginPath(); ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y); ctx.stroke();
-          // TR
-          ctx.beginPath(); ctx.moveTo(x + width - len, y); ctx.lineTo(x + width, y); ctx.lineTo(x + width, y + len); ctx.stroke();
-          // BL
-          ctx.beginPath(); ctx.moveTo(x, y + height - len); ctx.lineTo(x, y + height); ctx.lineTo(x + len, y + height); ctx.stroke();
-          // BR
-          ctx.beginPath(); ctx.moveTo(x + width - len, y + height); ctx.lineTo(x + width, y + height); ctx.lineTo(x + width, y + height - len); ctx.stroke();
-
-          // Label Plate
-          ctx.fillStyle = color;
-          const text = isKnown ? `ID: ${name.toUpperCase()} (MATCHED)` : "UNAUTHORIZED ACCESS";
-          ctx.font = 'bold 12px "Space Mono", monospace';
-          const textWidth = ctx.measureText(text).width;
-          ctx.fillRect(x, y - 30, textWidth + 20, 30);
-
-          ctx.fillStyle = 'black';
-          ctx.fillText(text, x + 10, y - 10);
-
-          // Logging logic
-          if (isKnown && name !== lastDetected) {
-            setLastDetected(name);
-            fetch('/api/log_attendance', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name })
-            }).then(() => {
-              fetchLogs();
-              fetchUsers();
-            });
-            // Clear lastDetected after 5 seconds to allow re-scan
-            setTimeout(() => setLastDetected(null), 5000);
+  useEffect(()=>{
+    let animId: number; let throttle=0;
+    const detect = async () => {
+      if(videoRef.current&&canvasRef.current&&camReady&&tab==='scan'&&Date.now()-throttle>200){
+        throttle=Date.now();
+        const vid=videoRef.current, canvas=canvasRef.current;
+        const ctx=canvas.getContext('2d');
+        if(!ctx){ animId=requestAnimationFrame(detect); return; }
+        const dims=faceapi.matchDimensions(canvas,vid,true);
+        const dets=await FaceService.detectFaces(vid);
+        const resized=faceapi.resizeResults(dets,dims);
+        const withDesc=users.filter(u=>u.encoding_json).map(u=>({name:u.name,descriptor:JSON.parse(u.encoding_json!)}));
+        const matcher=FaceService.createMatcher(withDesc);
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        setScanning(resized.length>0);
+        const live: LiveFace[]=[];
+        resized.forEach(det=>{
+          const best=matcher?.findBestMatch(det.descriptor);
+          const rawName=(best?.toString()||'Unknown').split(' ')[0];
+          const known=rawName!=='unknown';
+          live.push({name:known?rawName:'Unknown',known});
+          const {x,y,width,height}=det.detection.box;
+          const col=known?'#00d4ff':'#ff4757'; const L=16;
+          ctx.strokeStyle=col+'44'; ctx.lineWidth=1; ctx.setLineDash([5,4]);
+          ctx.strokeRect(x,y,width,height); ctx.setLineDash([]);
+          ctx.strokeStyle=col; ctx.lineWidth=2.5;
+          [[x,y,L,0,0,L],[x+width,y,-L,0,0,L],[x,y+height,L,0,0,-L],[x+width,y+height,-L,0,0,-L]].forEach(([px,py,dx1,dy1,dx2,dy2])=>{
+            ctx.beginPath(); ctx.moveTo(px+dx1,py+dy1); ctx.lineTo(px,py); ctx.lineTo(px+dx2,py+dy2); ctx.stroke();
+          });
+          const label=known?rawName.toUpperCase():'UNIDENTIFIED';
+          ctx.font='700 9px "JetBrains Mono",monospace';
+          const tw=ctx.measureText(label).width;
+          ctx.fillStyle=col; ctx.fillRect(x,y-22,tw+14,18);
+          ctx.fillStyle='#050810'; ctx.fillText(label,x+7,y-8);
+          if(known&&rawName!==lastSeen){
+            setLastSeen(rawName);
+            fetch(`${API_URL}/api/attendance`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:rawName})})
+              .then(()=>{ fetchLogs(); fetchUsers(); });
+            setTimeout(()=>setLastSeen(null),5000);
           }
         });
+        setFaces(live);
       }
-      animationId = requestAnimationFrame(runDetection);
+      animId=requestAnimationFrame(detect);
     };
+    if(tab==='scan'&&ready) detect();
+    return ()=>cancelAnimationFrame(animId);
+  },[camReady,tab,users,lastSeen,ready]);
 
-    if (activeTab === 'scan' && !isInitializing) runDetection();
-    return () => cancelAnimationFrame(animationId);
-  }, [isCameraReady, activeTab, users, lastDetected, isInitializing]);
-
-  const handleRegister = async () => {
-    if (!videoRef.current || !newName) return;
-    setIsRegistering(true);
+  const handleEnroll = async () => {
+    if(!videoRef.current||!newName.trim()) return;
+    setEnrolling(true);
     try {
-      const detections = await FaceService.detectFaces(videoRef.current);
-      if (detections.length === 0) {
-        alert("NO BIOMETRIC DATA DETECTED. ADJUST LIGHTING.");
-        setIsRegistering(false);
-        return;
-      }
-
-      const descriptor = Array.from(detections[0].descriptor);
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = 150;
-      tempCanvas.height = 150;
-      tempCanvas.getContext('2d')?.drawImage(videoRef.current, 0, 0, 150, 150);
-      const thumb = tempCanvas.toDataURL('image/jpeg', 0.8);
-
-      const res = await fetch('/api/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName, encoding: JSON.stringify(descriptor), thumb })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setNewName('');
-        await fetchUsers();
-        setActiveTab('roster');
-      } else alert(data.msg);
-
-    } catch (err) { console.error(err); }
-    finally { setIsRegistering(false); }
+      const dets=await FaceService.detectFaces(videoRef.current);
+      if(!dets.length){ showToast('No face detected -- adjust lighting',false); return; }
+      const descriptor=Array.from(dets[0].descriptor);
+      const tmp=document.createElement('canvas'); tmp.width=tmp.height=160;
+      tmp.getContext('2d')?.drawImage(videoRef.current,0,0,160,160);
+      const thumb=tmp.toDataURL('image/jpeg',0.85);
+      const res=await fetch(`${API_URL}/api/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newName.trim(),encoding:JSON.stringify(descriptor),thumb})});
+      const data=await res.json();
+      if(data.ok){ setNewName(''); await fetchUsers(); setTab('vault'); showToast(`${newName.trim()} enrolled`,true); }
+      else showToast(data.msg||'Enrollment failed',false);
+    } catch(e){ console.error(e); } finally { setEnrolling(false); }
   };
 
-  if (isInitializing) {
-    return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center">
-        <div className="relative mb-12">
-          <div className="w-32 h-32 border-4 border-emerald-500/20 rounded-full" />
-          <div className="absolute inset-0 w-32 h-32 border-t-4 border-emerald-500 rounded-full animate-spin shadow-[0_0_40px_rgba(16,185,129,0.4)]" />
-          <Fingerprint className="absolute inset-0 m-auto w-12 h-12 text-emerald-500 animate-pulse" />
-        </div>
-        <h1 className="text-2xl font-black text-white tracking-[0.4em] uppercase mb-4 hud-text">Initializing AI</h1>
-        <p className="text-zinc-500 font-mono text-xs uppercase tracking-widest animate-pulse max-w-sm">
-          Loading neural descriptors & hardware acceleration drivers...
-        </p>
-      </div>
-    );
-  }
+  const showToast=(msg:string,ok=true)=>{
+    setToast({msg,ok});
+    if(toastTimer) clearTimeout(toastTimer);
+    setToastTimer(setTimeout(()=>setToast(null),4000));
+  };
+
+  if(!ready) return <BootScreen />;
+
+  const todayCount=logs.filter(l=>new Date(l.timestamp).toDateString()===new Date().toDateString()).length;
+  const unknownCount=faces.filter(f=>!f.known).length;
+
+  const navItems=[
+    {id:'scan'   as Tab, icon:I.scan,   label:'Biometric Scan',  sub: scanning?'Scanning...':'Live detection'},
+    {id:'enroll' as Tab, icon:I.enroll, label:'Enroll Identity', sub:'Register profile'},
+    {id:'vault'  as Tab, icon:I.vault,  label:'Identity Vault',  sub:`${users.length} profiles`},
+    {id:'log'    as Tab, icon:I.log,    label:'Access Log',      sub:`${todayCount} today`},
+  ];
 
   return (
-    <div className="min-h-screen">
-      <div className="mesh-bg" />
+    <div className="app">
+      <AnimatePresence>
+        {toast&&(
+          <motion.div className={`toast${toast.ok?' toast-ok':' toast-err'}`}
+            initial={{opacity:0,y:12,scale:.96}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:6,scale:.97}}>
+            <span className="toast-icon">{toast.ok?I.ok:I.warn}</span>{toast.msg}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Futuristic Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-20 md:w-80 bg-black/40 backdrop-blur-3xl border-r border-white/5 flex flex-col z-50">
-        <div className="p-8 pb-12 flex items-center gap-5">
-          <div className="relative group">
-            <div className="absolute -inset-1 bg-gradient-to-r from-emerald-600 to-cyan-600 rounded-2xl blur opacity-40 group-hover:opacity-100 transition duration-1000"></div>
-            <div className="relative w-12 h-12 bg-black rounded-2xl flex items-center justify-center border border-emerald-500/40 rotate-3 group-hover:rotate-0 transition-transform duration-500">
-              <Fingerprint className="text-emerald-500 w-7 h-7" />
+      {/* Sidebar */}
+      <aside className={`sidebar${collapsed?' sidebar-collapsed':''}`}>
+        <div className="sb-logo">
+          {!collapsed&&(
+            <div className="sb-logo-block">
+              <div className="sb-logo-badge">{I.shield}</div>
+              <div className="sb-logo-text"><span className="sb-logo-name">FACENET</span><span className="sb-logo-node">NODE V2</span></div>
             </div>
-          </div>
-          <div className="hidden md:block">
-            <h1 className="text-2xl font-black text-white tracking-tighter leading-none mb-1">FACENET</h1>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <p className="text-[10px] text-emerald-500 font-bold tracking-[0.2em] uppercase">V2 PRO ACTIVATED</p>
-            </div>
-          </div>
+          )}
+          {collapsed&&<div className="sb-logo-badge sb-logo-badge-sm">{I.shield}</div>}
+          <button className="sb-collapse" onClick={()=>setCollapsed(c=>!c)}>{collapsed?I.chevR:I.chevL}</button>
         </div>
 
-        <nav className="flex-1 px-4 space-y-3">
-          {[
-            { id: 'scan', icon: LayoutDashboard, label: 'SCAN HUB', desc: 'Secure Biometric' },
-            { id: 'register', icon: UserPlus, label: 'INDUCTION', desc: 'New Identity' },
-            { id: 'roster', icon: ShieldCheck, label: 'ID VAULT', desc: 'Secure Profiles' },
-            { id: 'logs', icon: Clock, label: 'TEMPORAL', desc: 'Access Logs' },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={cn(
-                "w-full flex items-center gap-5 p-4 rounded-[1.5rem] transition-all duration-500 relative group",
-                activeTab === tab.id
-                  ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-500"
-                  : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border border-transparent"
+        <nav className="sb-nav">
+          {navItems.map(item=>(
+            <button key={item.id} className={`sb-item${tab===item.id?' sb-active':''}`}
+              onClick={()=>setTab(item.id)} title={collapsed?item.label:undefined}>
+              <span className="sb-item-icon">{item.icon}</span>
+              {!collapsed&&(
+                <span className="sb-item-text">
+                  <span className="sb-item-label">{item.label}</span>
+                  <span className="sb-item-sub">{item.sub}</span>
+                </span>
               )}
-            >
-              {activeTab === tab.id && (
-                <motion.div layoutId="nav-glow" className="absolute inset-0 bg-emerald-500/5 blur-xl rounded-full" />
-              )}
-              <tab.icon className={cn("w-6 h-6", activeTab === tab.id ? "drop-shadow-[0_0_10px_rgba(16,185,129,1)]" : "opacity-50")} />
-              <div className="hidden md:block text-left">
-                <p className="text-xs font-black tracking-widest">{tab.label}</p>
-                <p className="text-[9px] opacity-40 font-mono tracking-tighter">{tab.desc}</p>
-              </div>
+              {!collapsed&&item.id==='vault'&&users.length>0&&<span className="sb-count">{users.length}</span>}
+              {!collapsed&&item.id==='scan'&&scanning&&<span className="sb-live-badge">LIVE</span>}
             </button>
           ))}
+          <div className="sb-sep" />
+          <button className={`sb-item sb-gw-item${tab==='greenwatch'?' sb-active sb-gw-active':''}`}
+            onClick={()=>setTab('greenwatch')} title={collapsed?'GreenWatch':undefined}>
+            <span className="sb-item-icon">{I.gw}</span>
+            {!collapsed&&(
+              <span className="sb-item-text">
+                <span className="sb-item-label">GreenWatch</span>
+                <span className="sb-item-sub">YOLO   Environmental</span>
+              </span>
+            )}
+            <span className={`sb-gw-dot${gwUp?' gw-live':''}`} />
+          </button>
         </nav>
 
-        <div className="p-6">
-          <div className="glass-card p-5 rounded-3xl space-y-4 border-emerald-500/10">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-black text-zinc-500 tracking-widest uppercase">System Core</span>
-              <Activity className="w-3 h-3 text-emerald-500" />
-            </div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between text-[11px] font-mono">
-                <span className="text-zinc-400">CPU LOAD</span>
-                <span className="text-emerald-500">{cpuUsage}%</span>
-              </div>
-              <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                <div
-                  style={{ width: `${cpuUsage}%` }}
-                  className="h-full bg-emerald-500 shadow-[0_0_15px_#10b981] transition-all duration-700"
-                />
-              </div>
-            </div>
-          </div>
+        {!collapsed&&<div className="sb-gw-widget-wrap"><GWWidget payload={gwPayload} up={gwUp} /></div>}
+
+        <div className="sb-foot">
+          <span className={`sb-foot-dot${serverUp===true?' dot-up':serverUp===false?' dot-down':' dot-wait'}`} />
+          {!collapsed&&<span className="sb-foot-txt">{serverUp===null?'Connecting...':serverUp?'API :3001 online':'API :3001 offline'}</span>}
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <main className="pl-20 md:pl-80 min-h-screen">
-        <div className="max-w-7xl mx-auto p-6 md:p-12">
-
-          <header className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
-            <div>
-              <p className="text-emerald-500 font-mono text-[10px] tracking-[0.4em] mb-2 uppercase">Command Center V2.1</p>
-              <h2 className="text-5xl font-black text-white tracking-tighter uppercase leading-tight">
-                {activeTab === 'scan' && "Scanning Environment"}
-                {activeTab === 'register' && "Profile Induction"}
-                {activeTab === 'roster' && "Verified Identity Vault"}
-                {activeTab === 'logs' && "Temporal Records"}
-              </h2>
-            </div>
-            <div className="flex items-center gap-3 glass-card px-4 py-2 rounded-2xl select-none">
-              <div className={cn(
-                "w-2 h-2 rounded-full",
-                systemStatus === 'nominal' ? "bg-emerald-500 shadow-[0_0_10px_#10b981]" :
-                  systemStatus === 'scanning' ? "bg-cyan-500 animate-pulse shadow-[0_0_10px_#06b6d4]" :
-                    "bg-rose-500 shadow-[0_0_10px_#f43f5e]"
-              )} />
-              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-[0.2em]">
-                System {systemStatus.toUpperCase()}
+      {/* Main */}
+      <div className="main">
+        {/* Topbar */}
+        <header className="topbar">
+          <div className="topbar-left">
+            <div className="topbar-breadcrumb">
+              <span className="topbar-system">SENTINEL</span>
+              <span className="topbar-sep">/</span>
+              <span className="topbar-page">
+                {tab==='scan'?'Biometric Scanner':tab==='enroll'?'Enroll Identity':tab==='vault'?'Identity Vault':tab==='log'?'Access Log':'GreenWatch'}
               </span>
             </div>
-          </header>
+            <p className="topbar-sub">
+              {tab==='scan'?`${users.length} profiles loaded   ${faces.length} face${faces.length!==1?'s':''} in frame`
+               :tab==='enroll'?'Register a new biometric identity'
+               :tab==='vault'?`${users.length} identit${users.length!==1?'ies':'y'} enrolled`
+               :tab==='log'?`${logs.length} records   ${todayCount} today`
+               :'Live YOLO surveillance   Galamsey detection'}
+            </p>
+          </div>
+          <div className="topbar-right">
+            <div className={`gw-status-pill${gwUp?' gw-pill-live':' gw-pill-off'}`}>
+              <span className="gw-pill-dot" /><span>GW {gwUp?'LIVE':'OFFLINE'}</span>
+            </div>
+            {gwPayload?.turbidity&&(
+              <div className="turb-pill" style={{borderColor:TURB_COL[gwPayload.turbidity.level]+'55'}}>
+                <span className="turb-pill-icon">{I.water}</span>
+                <span style={{color:TURB_COL[gwPayload.turbidity.level]}}>{gwPayload.turbidity.level}</span>
+              </div>
+            )}
+            <div className="topbar-clock">{clock}</div>
+          </div>
+        </header>
 
+        {/* KPI strip */}
+        {tab!=='greenwatch'&&(
+          <div className="kpi-strip">
+            {[
+              {lbl:'Enrolled',  val:String(users.length),         sub:'profiles',  hi:false},
+              {lbl:'Today',     val:String(todayCount),           sub:'verified',  hi:false},
+              {lbl:'In Frame',  val:String(faces.length),         sub:'faces',     hi:scanning},
+              {lbl:'Unknown',   val:String(unknownCount),         sub:'unmatched', hi:unknownCount>0},
+              {lbl:'Log Total', val:String(logs.length),          sub:'records',   hi:false},
+              {lbl:'GW Persons',val:String(gwPayload?.person_count??'--'),sub:'live',hi:false},
+            ].map(k=>(
+              <div key={k.lbl} className={`kpi${k.hi?' kpi-hi':''}`}>
+                <span className="kpi-lbl">{k.lbl}</span>
+                <span className="kpi-val">{k.val}</span>
+                <span className="kpi-sub">{k.sub}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="pages">
           <AnimatePresence mode="wait">
-            {activeTab === 'scan' ? (
-              <motion.section
-                key="scan"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="grid grid-cols-1 xl:grid-cols-4 gap-8"
-              >
-                <div className="xl:col-span-3 space-y-8">
-                  <div className="relative aspect-video rounded-[3rem] overflow-hidden border border-white/10 shadow-[0_0_100px_rgba(0,0,0,0.8)] bg-black group">
-                    <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover opacity-80" />
-                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full z-20" />
-                    <div className="scan-line" />
 
-                    {/* HUD Overlays */}
-                    <div className="absolute top-8 left-8 p-4 border-l border-t border-white/20 pointer-events-none">
-                      <p className="text-[9px] text-zinc-500 font-mono mb-1">REC_STREAM_01</p>
-                      <p className="text-[10px] text-white font-mono">1280x720_60FPS</p>
-                    </div>
-                    <div className="absolute top-8 right-8 text-right p-4 border-r border-t border-white/20 pointer-events-none">
-                      <p className="text-[9px] text-zinc-500 font-mono mb-1">ENCRYPTION</p>
-                      <p className="text-[10px] text-emerald-500 font-mono font-bold">AES-256-GCM</p>
-                    </div>
-                    <div className="absolute bottom-8 left-8 right-8 flex justify-between items-end pointer-events-none">
-                      <div className="p-4 border-l border-b border-white/20">
-                        <div className="flex gap-1 h-4 items-end mb-2">
-                          {[...Array(8)].map((_, i) => (
-                            <div key={i} className="w-1 bg-emerald-500/40" style={{ height: `${20 + Math.random() * 80}%` }} />
-                          ))}
+            {/* SCAN */}
+            {tab==='scan'&&(
+              <motion.div key="scan" className="page pg-scan"
+                initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
+                <div className="scan-feed-wrap">
+                  <video ref={videoRef} autoPlay muted playsInline className="scan-vid" />
+                  <canvas ref={canvasRef} className="scan-cvs" />
+                  {scanning&&<div className="scan-sweep" />}
+                  <div className="hc tl"/><div className="hc tr"/><div className="hc bl"/><div className="hc br"/>
+                  <div className="feed-hud-top">
+                    <span className={`rec-badge${scanning?' rec-active':''}`}><span className="rec-dot"/>{scanning?'SCANNING':'STANDBY'}</span>
+                    <span className="feed-enc">AES-256-GCM</span>
+                  </div>
+                  <div className="feed-hud-bot">
+                    <span className="feed-res">1280 x 720</span>
+                    <span className="feed-clock">{clock}</span>
+                  </div>
+                  {!camReady&&<div className="feed-init-overlay"><div className="feed-init-spinner"/><span>Initialising camera...</span></div>}
+                </div>
+
+                <div className="scan-panel">
+                  <div className="sp-stats-row">
+                    {[
+                      {l:'Detected', v:faces.length, c:''},
+                      {l:'Matched',  v:faces.filter(f=>f.known).length, c:'c-cyan'},
+                      {l:'Unknown',  v:unknownCount, c:unknownCount>0?'c-red':''},
+                      {l:'Vault',    v:users.length, c:''},
+                    ].map(s=>(
+                      <div key={s.l} className="sp-stat">
+                        <span className="sp-stat-lbl">{s.l}</span>
+                        <span className={`sp-stat-val ${s.c}`}>{s.v||'--'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={`sp-status-bar${scanning?' sp-status-active':''}`}>
+                    <span className="sp-status-dot"/><span>{scanning?`${faces.length} face${faces.length!==1?'s':''} detected`:'Ready -- position face in frame'}</span>
+                  </div>
+                  <div className="sp-faces-hdr">
+                    <span className="sp-faces-title">Live Detections</span>
+                    <span className="sp-faces-badge">{faces.length}</span>
+                  </div>
+                  <div className="sp-faces-list">
+                    {faces.length===0?(
+                      <div className="empty-sm"><span className="empty-sm-icon">{I.scan}</span><span>No faces in frame</span></div>
+                    ):faces.map((f,i)=>(
+                      <div key={i} className={`face-row${f.known?'':' face-unknown'}`}>
+                        <div className={`face-av${f.known?' face-av-known':' face-av-unk'}`}>{f.known?initials(f.name):'?'}</div>
+                        <div className="face-info">
+                          <span className="face-name">{f.name}</span>
+                          <span className={`face-tag${f.known?' tag-match':' tag-unk'}`}>{f.known?'MATCHED':'UNIDENTIFIED'}</span>
                         </div>
-                        <p className="text-[9px] text-zinc-500 font-mono">BITRATE_NOMINAL</p>
                       </div>
-                      <div className="p-4 border-r border-b border-white/20 text-right">
-                        <p className="text-3xl font-black text-white tracking-widest">{new Date().toLocaleTimeString([], { hour12: false })}</p>
-                        <p className="text-[9px] text-zinc-500 font-mono">NODE_UTC_REF</p>
-                      </div>
-                    </div>
+                    ))}
+                  </div>
+                  <div className="sp-actions">
+                    <button className="btn-outline" onClick={fetchUsers}>{I.refresh} Refresh</button>
+                    <button className="btn-primary" onClick={()=>setTab('enroll')}>+ Enroll</button>
                   </div>
                 </div>
+              </motion.div>
+            )}
 
-                <div className="space-y-6">
-                  <div className="glass-card p-8 rounded-[2.5rem] flex flex-col justify-between h-[200px]">
-                    <div className="flex items-center justify-between text-zinc-500">
-                      <p className="text-[10px] font-black tracking-widest uppercase">Identities</p>
-                      <DbIcon className="w-5 h-5 text-emerald-500" />
-                    </div>
-                    <div>
-                      <h4 className="text-5xl font-black text-white mb-2">{users.length}</h4>
-                      <p className="text-[10px] text-zinc-500 font-mono">ENCRYPTED PROFILES IN VAULT</p>
-                    </div>
+            {/* ENROLL */}
+            {tab==='enroll'&&(
+              <motion.div key="enroll" className="page pg-enroll"
+                initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
+                <div className="enroll-form-col">
+                  <div className="enroll-heading">
+                    <div className="enroll-heading-icon">{I.enroll}</div>
+                    <div><h2 className="enroll-h2">New Identity</h2><p className="enroll-p">Register a biometric profile.</p></div>
                   </div>
-
-                  <div className="glass-card p-8 rounded-[2.5rem] flex flex-col justify-between h-[200px] border-emerald-500/20">
-                    <div className="flex items-center justify-between text-zinc-500">
-                      <p className="text-[10px] font-black tracking-widest uppercase">Verified Scans</p>
-                      <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                    </div>
-                    <div>
-                      <h4 className="text-5xl font-black text-white mb-2">
-                        {logs.filter(l => new Date(l.timestamp).toDateString() === new Date().toDateString()).length}
-                      </h4>
-                      <p className="text-[10px] text-zinc-500 font-mono">SESSION AUTHORIZATIONS</p>
-                    </div>
+                  <div className="field-group">
+                    <label className="field-lbl">Name / Identifier</label>
+                    <input className="field-inp" type="text" value={newName}
+                      onChange={e=>setNewName(e.target.value)}
+                      onKeyDown={e=>e.key==='Enter'&&handleEnroll()}
+                      placeholder="e.g. John Mensah" autoFocus />
                   </div>
-
-                  <div className="glass-card p-6 rounded-[2rem] bg-emerald-500/5 group">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-black">
-                        <Fingerprint className="w-6 h-6" />
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-black text-white">READY TO SCAN</p>
-                        <p className="text-[9px] text-zinc-500 font-mono uppercase">Position face in center frame</p>
-                      </div>
+                  <div className="enroll-steps">
+                    <p className="enroll-steps-title">Instructions</p>
+                    {['Enter a name above','Face the camera squarely','Ensure good, even lighting','Press Enroll Identity'].map((s,i)=>(
+                      <div key={i} className="step-row"><span className="step-n">{i+1}</span><span className="step-t">{s}</span></div>
+                    ))}
+                  </div>
+                  <div className="enroll-actions">
+                    <button className={`btn-primary enroll-btn${enrolling||!newName.trim()?' btn-disabled':''}`}
+                      onClick={handleEnroll} disabled={enrolling||!newName.trim()}>
+                      {enrolling?<><span className="spinner"/> Capturing...</>:'Enroll Identity'}
+                    </button>
+                    <button className="btn-outline" onClick={()=>setTab('vault')}>View Vault ({users.length})</button>
+                  </div>
+                  {serverUp===false&&<div className="offline-warn">{I.warn}<span>API offline   run <code>npm run server</code></span></div>}
+                </div>
+                <div className="enroll-cam-col">
+                  <div className="enroll-cam-wrap">
+                    <video ref={tab==='enroll'?videoRef:undefined} autoPlay muted playsInline className="enroll-vid" />
+                    <div className="enroll-reticle">
+                      <span className="rt tl"/><span className="rt tr"/><span className="rt bl"/><span className="rt br"/>
+                      <div className="reticle-oval"/>
                     </div>
+                    <div className="enroll-cam-label">Align face within oval</div>
                   </div>
                 </div>
-              </motion.section>
-            ) : activeTab === 'register' ? (
-              <motion.section key="register" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="max-w-4xl">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-                  <div className="space-y-8">
-                    <div className="glass-card p-12 rounded-[3.5rem] space-y-10 border-white/5 bg-black/40">
-                      <div className="space-y-3">
-                        <label className="text-[10px] font-black text-emerald-500 tracking-[0.3em] uppercase ml-1">Assign User Identity</label>
-                        <input
-                          type="text"
-                          value={newName}
-                          onChange={e => setNewName(e.target.value)}
-                          placeholder="ENTER_UNIQUE_NAME"
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-8 py-6 text-xl font-black text-white placeholder:text-zinc-800 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500/40 transition-all duration-500"
-                        />
-                      </div>
-                      <button
-                        onClick={handleRegister}
-                        disabled={isRegistering || !newName}
-                        className="group relative w-full overflow-hidden bg-emerald-500 disabled:bg-zinc-800 text-black py-7 rounded-[2rem] font-black text-lg transition-all active:scale-95 disabled:grayscale"
-                      >
-                        {isRegistering ? (
-                          <Loader2 className="animate-spin h-7 w-7 mx-auto" />
-                        ) : (
-                          <div className="flex items-center justify-center gap-3">
-                            <span>INDUCT PROFILE</span>
-                            <ArrowRight className="w-6 h-6 group-hover:translate-x-2 transition-transform" />
+              </motion.div>
+            )}
+
+            {/* VAULT */}
+            {tab==='vault'&&(
+              <motion.div key="vault" className="page pg-vault"
+                initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
+                <div className="vault-toolbar">
+                  <span className="vault-count">{users.length} identit{users.length!==1?'ies':'y'}</span>
+                  <div style={{display:'flex',gap:8}}>
+                    <button className="btn-outline sm" onClick={fetchUsers}>{I.refresh}</button>
+                    <button className="btn-primary sm" onClick={()=>setTab('enroll')}>+ Enroll</button>
+                  </div>
+                </div>
+                {users.length===0?(
+                  <div className="vault-empty">
+                    <div className="vault-empty-icon">{I.vault}</div>
+                    {serverUp===false?(
+                      <><p className="vault-empty-h">Server offline</p><p className="vault-empty-s">Run: <code>npm run server</code></p><button className="btn-outline" onClick={fetchUsers}>Retry</button></>
+                    ):(
+                      <><p className="vault-empty-h">Vault is empty</p><p className="vault-empty-s">No identities registered yet</p><button className="btn-primary" onClick={()=>setTab('enroll')}>+ Enroll First Identity</button></>
+                    )}
+                  </div>
+                ):(
+                  <div className="vault-grid">
+                    {users.map(u=>(
+                      <motion.div key={u.name} layout className="vault-card">
+                        <div className="vc-photo">
+                          {u.thumb?<img src={u.thumb} alt={u.name}/>:<span className="vc-initials">{initials(u.name)}</span>}
+                          <div className="vc-photo-glow"/>
+                        </div>
+                        <div className="vc-body">
+                          <span className="vc-name">{u.name}</span>
+                          <div className="vc-chips">
+                            <span className="vc-chip">{u.count??0}x verified</span>
+                            <span className="vc-id">{u.name.slice(0,3).toUpperCase()}-{String(u.count??0).padStart(3,'0')}</span>
                           </div>
-                        )}
-                      </button>
-                    </div>
-
-                    <div className="flex gap-4">
-                      <div className="flex-1 glass-card p-6 rounded-3xl flex items-center gap-4">
-                        <Activity className="w-5 h-5 text-emerald-500" />
-                        <div>
-                          <p className="text-[10px] font-bold text-zinc-500 uppercase">Input Sync</p>
-                          <p className="text-xs font-black text-white">NOMINAL</p>
                         </div>
-                      </div>
-                      <div className="flex-1 glass-card p-6 rounded-3xl flex items-center gap-4">
-                        <Cpu className="w-5 h-5 text-emerald-500" />
-                        <div>
-                          <p className="text-[10px] font-bold text-zinc-500 uppercase">Process Mode</p>
-                          <p className="text-xs font-black text-white">NEURAL_RT</p>
-                        </div>
-                      </div>
-                    </div>
+                        <div className="vc-status-bar"/>
+                      </motion.div>
+                    ))}
                   </div>
+                )}
+              </motion.div>
+            )}
 
-                  <div className="relative aspect-square rounded-[4rem] overflow-hidden border border-white/5 shadow-2xl bg-black">
-                    <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover scale-x-[-1] opacity-70" />
-                    <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-between px-10 pointer-events-none opacity-20">
-                      <div className="w-20 h-20 border-l-2 border-t-2 border-white" />
-                      <div className="w-20 h-20 border-r-2 border-t-2 border-white" />
-                    </div>
-                    <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-between px-10 mt-20 pointer-events-none opacity-20">
-                      <div className="w-20 h-20 border-l-2 border-b-2 border-white" />
-                      <div className="w-20 h-20 border-r-2 border-b-2 border-white" />
-                    </div>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center p-12 text-center pointer-events-none">
-                      <p className="text-[10px] font-black text-white/20 tracking-[1em] uppercase">Vercel Induction Mode</p>
-                    </div>
+            {/* LOG */}
+            {tab==='log'&&(
+              <motion.div key="log" className="page pg-log"
+                initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
+                <div className="log-toolbar">
+                  <div className="log-search-box">
+                    <span className="log-search-icon">{I.search}</span>
+                    <input className="log-search" type="text" placeholder="Search identity..." value={search} onChange={e=>setSearch(e.target.value)}/>
                   </div>
+                  <input className="log-date" type="date" value={dateFilter} onChange={e=>setDateFilter(e.target.value)}/>
+                  {dateFilter&&<button className="btn-outline sm" onClick={()=>setDateFilter('')}>x</button>}
+                  <span className="log-total">{logs.length} records</span>
+                  <button className="btn-outline sm" onClick={fetchLogs} style={{marginLeft:'auto'}}>{I.refresh}</button>
                 </div>
-              </motion.section>
-            ) : activeTab === 'roster' ? (
-              <motion.section key="roster" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                  {users.length === 0 ? (
-                    <div className="col-span-full py-32 text-center glass-card rounded-[3rem]">
-                      <UserPlus className="w-16 h-16 text-zinc-800 mx-auto mb-6" />
-                      <h4 className="text-xl font-black text-zinc-600 uppercase tracking-widest">No Identities Stored</h4>
-                      <p className="text-zinc-700 font-mono text-xs mt-2 italic">Register a new user to populate the vault.</p>
-                    </div>
-                  ) : users.map(user => (
-                    <motion.div
-                      layout
-                      key={user.name}
-                      className="glass-card p-6 rounded-[2.5rem] flex flex-col items-center text-center group relative overflow-hidden active:scale-95 transition-transform"
-                    >
-                      <div className="relative mb-6">
-                        <div className="absolute -inset-2 bg-emerald-500/20 rounded-[2rem] blur opacity-0 group-hover:opacity-100 transition duration-500"></div>
-                        <div className="relative w-32 h-32 rounded-[2rem] bg-zinc-900 border border-white/5 overflow-hidden">
-                          {user.thumb ? (
-                            <img src={user.thumb} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt={user.name} />
-                          ) : (
-                            <User className="w-full h-full p-10 text-zinc-800" />
-                          )}
-                        </div>
-                      </div>
-                      <h3 className="font-black text-xl text-white uppercase tracking-tight group-hover:text-emerald-500 transition-colors">{user.name}</h3>
-                      <p className="text-[10px] font-mono text-zinc-500 mt-2 tracking-widest uppercase">Verified {user.count} Times</p>
-
-                      <div className="mt-6 pt-6 border-t border-white/5 w-full flex justify-between items-center text-[9px] font-black text-zinc-600 tracking-widest">
-                        <span>ESTD_ID</span>
-                        <span className="text-emerald-900">{user.name.slice(0, 3).toUpperCase()}-{user.count.toString().padStart(3, '0')}</span>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.section>
-            ) : (
-              <motion.section key="logs" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-                <div className="glass-card rounded-[3.5rem] overflow-hidden border border-white/5 bg-black/20">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left font-mono">
-                      <thead>
-                        <tr className="bg-emerald-500/10 text-emerald-500/80 text-[10px] font-black tracking-[0.3em] uppercase">
-                          <th className="px-12 py-8">Access_Identity</th>
-                          <th className="px-12 py-8">Node_Timestamp</th>
-                          <th className="px-12 py-8">Security_Gate</th>
-                          <th className="px-12 py-8 text-right">Link_Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5">
-                        {logs.length === 0 ? (
-                          <tr>
-                            <td colSpan={4} className="px-12 py-32 text-center">
-                              <Clock className="w-12 h-12 text-zinc-900 mx-auto mb-6 opacity-40" />
-                              <p className="text-zinc-700 text-xs font-black tracking-widest uppercase">Zero temporal records detected</p>
-                            </td>
-                          </tr>
-                        ) : logs.map(log => (
-                          <tr key={log.id} className="group hover:bg-white/[0.02] transition-colors relative">
-                            <td className="px-12 py-10">
-                              <div className="flex items-center gap-4">
-                                <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                                <span className="font-black text-white text-base tracking-tighter uppercase">{log.name}</span>
-                              </div>
-                            </td>
-                            <td className="px-12 py-10">
-                              <div className="flex flex-col">
-                                <span className="text-sm font-black text-zinc-300">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                                <span className="text-[9px] text-zinc-600">{new Date(log.timestamp).toDateString().toUpperCase()}</span>
-                              </div>
-                            </td>
-                            <td className="px-12 py-10">
-                              <div className="flex items-center gap-2">
-                                <ShieldCheck className="w-4 h-4 text-emerald-500/50" />
-                                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">BIOMETRIC_PASS</span>
-                              </div>
-                            </td>
-                            <td className="px-12 py-10 text-right">
-                              <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[9px] font-black text-emerald-500 uppercase">Synced_Cloud</span>
-                            </td>
+                <div className="log-scroll">
+                  {logs.length===0?(
+                    <div className="empty-full"><div className="empty-full-icon">{I.log}</div><p>No records found</p></div>
+                  ):(
+                    <table className="log-table">
+                      <thead><tr><th>Identity</th><th>Time</th><th>Date</th><th>Gate</th><th>Status</th></tr></thead>
+                      <tbody>
+                        {logs.map(l=>(
+                          <tr key={l.id}>
+                            <td><div className="log-identity"><div className="log-av">{initials(l.name)}</div><span>{l.name}</span></div></td>
+                            <td><span className="log-time-val">{fmtTime(l.timestamp)}</span></td>
+                            <td><span className="log-date-val">{fmtDate(l.timestamp)}</span></td>
+                            <td><span className="log-gate">BIOMETRIC_01</span></td>
+                            <td><span className="log-badge">VERIFIED</span></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {/* GREENWATCH */}
+            {tab==='greenwatch'&&(
+              <motion.div key="greenwatch" className="page pg-gw"
+                initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
+                <div className="gw-topstrip">
+                  <div className="gw-topstrip-left">
+                    <span className={`gw-live-pill${gwUp?' pill-live':' pill-off'}`}><span className="pill-dot"/>{gwUp?'LIVE':'OFFLINE'}</span>
+                    <span className="gw-url-label">{GW_HTTP}</span>
+                  </div>
+                  {gwPayload&&(
+                    <div className="gw-stat-chips">
+                      <div className="gw-chip"><span className="gw-chip-lbl">Persons</span><span className="gw-chip-val c-cyan">{gwPayload.person_count}</span></div>
+                      <div className="gw-chip"><span className="gw-chip-lbl">Objects</span><span className="gw-chip-val">{gwPayload.detections?.length??0}</span></div>
+                      <div className="gw-chip"><span className="gw-chip-lbl">Severity</span>
+                        <span className="gw-chip-val" style={{color:gwPayload.max_severity==='high'?'#ff4757':gwPayload.max_severity==='medium'?'#f97316':'#3d5273'}}>{gwPayload.max_severity?.toUpperCase()}</span></div>
+                      {gwPayload.turbidity&&(
+                        <div className="gw-chip"><span className="gw-chip-lbl">Water</span>
+                          <span className="gw-chip-val" style={{color:TURB_COL[gwPayload.turbidity.level]}}>{gwPayload.turbidity.level}   {gwPayload.turbidity.score}/100</span></div>
+                      )}
+                      <div className="gw-chip"><span className="gw-chip-lbl">Infer</span><span className="gw-chip-val c-muted">{Math.round(gwPayload.processing_ms)}ms</span></div>
+                    </div>
+                  )}
+                  <div className="gw-topstrip-right">
+                    <a href={GW_FILE} target="_blank" rel="noreferrer" className="btn-outline sm">{I.expand} Fullscreen</a>
+                    <a href={`${GW_HTTP}/docs`} target="_blank" rel="noreferrer" className="btn-outline sm">API </a>
                   </div>
                 </div>
-              </motion.section>
+                {gwUp?(
+                  <iframe className="gw-frame" src={GW_FILE} title="GreenWatch Dashboard" sandbox="allow-scripts allow-same-origin"/>
+                ):(
+                  <div className="gw-offline-screen">
+                    <div className="gw-offline-icon">{I.gw}</div>
+                    <h3 className="gw-offline-h">GreenWatch Offline</h3>
+                    <p className="gw-offline-p">Start the YOLO inference server to connect</p>
+                    <code className="gw-offline-cmd">uvicorn yolo_server:app --host 0.0.0.0 --port 8000</code>
+                    <div className="gw-offline-actions">
+                      <a href={GW_FILE} target="_blank" rel="noreferrer" className="btn-outline">Open dashboard.html </a>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
             )}
+
           </AnimatePresence>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
